@@ -1,308 +1,241 @@
-# Truth Launcher
+# TruthSoft
 
 <div align="center">
 
-**Secure, managed Minecraft ecosystem with a custom launcher, backend API, admin panel, and client-side mod.**
+**Multi-tenant SaaS for Minecraft server operators — white-label launcher, signed auto-update, license-gated access, customer admin panel, on-prem wrapper.**
 
 [![Rust](https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![Tauri](https://img.shields.io/badge/Tauri-FFC131?style=for-the-badge&logo=tauri&logoColor=black)](https://tauri.app/)
-[![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
+[![Tauri](https://img.shields.io/badge/Tauri%20v2-FFC131?style=for-the-badge&logo=tauri&logoColor=black)](https://tauri.app/)
+[![Axum](https://img.shields.io/badge/Axum-005571?style=for-the-badge&logo=rust&logoColor=white)](https://github.com/tokio-rs/axum)
+[![React](https://img.shields.io/badge/React%2019-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Java](https://img.shields.io/badge/Java-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white)](https://openjdk.org/)
-[![Fabric](https://img.shields.io/badge/Fabric_Mod_Loader-DBD0B4?style=for-the-badge&logo=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABhSURBVDhPY2AYBYMBMDIw/GdgYHBE4jMiC4ALQhQBARY+I7oEVBwKkPkMWMUhHIJ+QQHTD7Y4uh+gzsKqA5cAhQ8OgKYFY3VkEI4DqyNQwEAcBVYJdhTsGqAA2x8GAQAMABeIFrnlDgcAAAAASUVORK5CYII=&logoColor=white)](https://fabricmc.net/)
+[![Stripe](https://img.shields.io/badge/Stripe-635BFF?style=for-the-badge&logo=stripe&logoColor=white)](https://stripe.com/)
 
 </div>
 
 ---
 
-## Overview
+## What is TruthSoft
 
-MineTruth is a full-stack Minecraft management platform designed to provide a controlled and secure gaming experience. The project follows a **hybrid security model** that combines strict enforcement mechanisms (HWID bans, session heartbeats, IP tracking) with a polished, user-friendly interface.
+TruthSoft is a SaaS platform that lets independent Minecraft server operators run a **branded launcher + admin console + license enforcement** stack without writing any of it themselves. Operators sign up at `truthsoft.net`, configure their server (CMS preset, branding, plan), and the platform builds, signs, and ships a per-customer launcher that:
 
-The ecosystem consists of four integrated components that work together to deliver a complete solution -- from game launching and mod management to real-time player monitoring and administration.
+- authenticates players against the operator's own CMS (NamelessMC / Azuriom / LeaderOS / Minexon),
+- only runs while the operator's TruthSoft license is paid + valid,
+- auto-updates from the operator's customer-facing admin panel (`customer-admin.<their-domain>`),
+- pipes session/HWID telemetry through a per-customer **wrapper** running on the operator's own VPS — so player data never leaves their infrastructure.
+
+A typical customer onboarding takes ~6 wizard steps and ~10 minutes; from then on the operator manages everything from their admin SPA.
 
 ---
 
 ## Architecture
 
 ```
-                          +----------------------+
-                          |     Truth Admin      |
-                          |  (React + Tailwind)  |
-                          +---------+-----------+
-                                    |
-                                    | REST API
-                                    v
-+---------------------+   +---------------------+   +---------------------+
-|    Truth Launcher   |-->|    Truth Backend    |<--|    MySQL Database   |
-|   (Tauri + React)   |   |    (Rust / Axum)    |   |        (SQLx)       |
-+---------------------+   +---------------------+   +---------------------+
-         |
-         | Launches
-         v
-+---------------------+
-|     Truth Client     |
-| + AxolotlClient Mod  |
-|       (Fabric)       |
-+---------------------+
+                                                  Stripe / Cloudflare
+                                                          │
+                                                          ▼
+                              ┌───────────────────────────────────────────────┐
+                              │              truthsoft.net                    │
+                              │   (Express + React signup / dashboard /       │
+                              │    onboarding wizard / Stripe webhooks)       │
+                              └─────────────┬─────────────────────────────────┘
+                                            │  bridge (HMAC-signed)
+                                            ▼
+┌────────────────────┐   wss/https   ┌─────────────────────┐   sql   ┌──────────────────┐
+│  customer-admin    │◄────────────►│  backend.truthsoft  │◄────────►│  control DB      │
+│  .<customer>.net   │              │   .net  (Axum/Rust) │          │  (multi-tenant)  │
+│  (admin SPA, SaaS) │              └────────┬───┬────────┘          └──────────────────┘
+└────────────────────┘                       │   │
+                                  per-tenant │   │ wrapper tunnel
+                                       JWT   │   │ (mTLS-ish + Ed25519)
+                                             ▼   ▼
+                              ┌──────────────────────────────────────┐
+                              │   Customer VPS                       │
+                              │  ┌───────────────┐  ┌─────────────┐  │
+                              │  │ truthsoft     │◄─┤  customer's │  │
+                              │  │ wrapper       │  │  CMS DB     │  │
+                              │  │ (Rust agent)  │  │ (NamelessMC │  │
+                              │  └─────────┬─────┘  │  /Azuriom)  │  │
+                              │            │        └─────────────┘  │
+                              │            ▼                         │
+                              │    [Customer's MC server]            │
+                              └──────────────────────────────────────┘
+                                             ▲
+                                             │ join via signed launcher
+                                             │
+                              ┌──────────────┴───────────────┐
+                              │     Player's machine         │
+                              │  Per-customer Tauri launcher │
+                              │  (signed, auto-updated)      │
+                              └──────────────────────────────┘
 ```
 
 ---
 
 ## Components
 
-### 1. Backend 
+### 1. `minetruth-backend` — multi-tenant control plane
 
-The core REST API powering the entire ecosystem, built with **Rust** and **Axum** for maximum performance and safety.
+Rust + Axum HTTP/WebSocket service running on `backend.truthsoft.net`. Resolves tenants by Host header (custom domain or `<slug>.truthsoft.net`), authenticates operator admins + players, enforces license state, and proxies launcher CMS calls through the customer's wrapper tunnel.
 
 | Category | Details |
 |---|---|
-| **Language** | Rust (Edition 2021) |
-| **Framework** | Axum 0.7 |
-| **Database** | MySQL via SQLx 0.7 |
-| **Auth** | JWT + Bcrypt password hashing |
+| Stack | Rust 2021, Axum 0.7, sqlx + MariaDB |
+| Auth | JWT (per-tenant signing key) in httpOnly cookie + token-version revocation |
+| Surfaces | `/api/v2/auth/*`, `/api/v2/admin/*`, `/api/launcher/*`, `/api/wrapper/{tunnel,bootstrap}`, `/api/bridge/*` |
+| Per-tenant | Ed25519 signing key, AES-GCM encrypted secrets, JWT secret, license state cache (72h TTL) |
 
-**API Routes:**
+Key features:
+- License enforcement gates *every* admin / player surface — expiry + revocation propagate within ~60 s via the bridge.
+- Wrapper tunnel: long-lived WebSocket the customer's wrapper opens to backend; backend forwards CMS queries (auth, perms, mods) over it instead of opening a port to the customer's DB.
+- Tunnel bootstrap rate limited per source IP (10 / min) to block tenant-slug enumeration.
+- At-rest encryption: license keys, JWT secrets, SMTP passwords stored as AES-256-GCM blobs (master key in env, encrypted-blob-present implies decrypt-must-succeed).
 
-| Route | Description |
+### 2. `truthsoft-web` — operator signup + dashboard
+
+Express + React app at `truthsoft.net` (static SPA in Plesk httpdocs, Express server at `/opt/truthsoft-server`). Handles signup, Stripe checkout, the 6-step onboarding wizard (CnameSetupCard included), and dispatches a per-tenant build + provisioning to the bridge once payment clears.
+
+- Stripe webhook idempotency (`webhook_events.event_id UNIQUE`).
+- Email verification + forgot-password (token tables + hashed reset codes).
+- SSRF guard on logo/banner URL fields, magic-byte upload validation.
+- JWT_SECRET fail-fast on boot.
+- Subscription cancel JOIN through `tenants` so the bridge actually revokes on Stripe `customer.subscription.deleted`.
+
+### 3. `minetruth-admin` — customer admin SPA
+
+React 19 + TypeScript + Tailwind v4, served at `customer-admin.truthsoft.net` (single deploy, brand fetched at runtime via CSS variables). The operator's admin team logs in here and gets a panel that's branded for their server but talks to the central backend via the per-tenant resolver.
+
+| Page | Purpose |
 |---|---|
-| `/api/auth/*` | Login, register, heartbeat, game lifecycle |
-| `/api/mods/*` | Mod listing, CRUD, hash verification |
-| `/api/admin/users/*` | User management, analytics, alt detection |
-| `/api/admin/bans/*` | HWID ban creation and management |
-| `/api/admin/stats/*` | Dashboard stats, active players, peak hours |
-| `/api/admin/config/*` | Remote config, polls, announcements |
-| `/api/crash/*` | Crash report collection and viewing |
+| Dashboard | live player count, build status, license state |
+| Manage Admins | grant / revoke admin (writes to operator's CMS via wrapper) |
+| Schema Settings | CMS / password / TOTP three-axis composer |
+| SMTP & Notifications | per-tenant SMTP config + new-device login mail |
+| Order Settings | branding, server address, MC version |
+| Sessions | live HWIDs / IPs / heartbeat (wrapper-piped) |
+| Builds | request rebuild, download history, publish version |
+| Subscriptions | plan, billing, license keys |
 
-**Key Features:**
-- JWT authentication with role-based access control (RBAC)
-- HWID-based ban enforcement for anti-cheat
-- Session heartbeat tracking for real-time player monitoring
-- System info collection (OS, GPU, CPU, RAM, resolution, location)
-- Mod dependency resolution and hash verification
-- Community polling system
-- Crash report analytics and event logging
+LicenseGate component blanket-overlays the SPA + force-logouts when backend returns 402.
 
-**Database Tables:** `accounts`, `launcher_sessions`, `hwid_bans`, `approved_mods`, `user_system_info`, `polls`, `poll_votes`, `permissions`, `account_permissions`
+### 4. `minetruth-launcher` — per-tenant Tauri launcher
+
+Tauri 2 desktop binary, source-rebuilt by the build runner per order. Each binary embeds:
+
+- the operator's brand (logo, banner, colors),
+- backend URL pin,
+- license key,
+- per-tenant Ed25519 public key (server-issued artifacts verified against this).
+
+Player flow: launch → HWID + license probe → if OK, fetch mods + assets (parallel, hash-verified, https-only on tenant content) → launch JVM → minimize. Auto-update plugin polls a signed manifest, downloads the new MSI, verifies signature, replaces the binary.
+
+Hardening this release: zip-extract budget (2 GB / entry-cap 1 GB), mod fetch failure aborts launch, mandatory mod with empty hash hard-errors, JDK download SHA-256 pinned.
+
+### 5. `minetruth-wrapper` — customer-VPS agent
+
+Rust binary the operator installs on their MC VPS. Opens a persistent WebSocket to `tunnel.truthsoft.net` (DNS-only for DDoS surface separation), authenticates with license_key + tenant_slug, then services backend's CMS lookups locally against the operator's MariaDB.
+
+- Wizard-driven install: detects CMS, reads schema, writes wrapper config.
+- HWID-bound admin grant on first run (no manual SQL for the operator).
+- LicenseRevoked frame → process exit + supervisor will-not-restart.
+- (In progress) SPKI pin against `tunnel.truthsoft.net` cert; per-tenant rate limiting on tunnel ops.
+
+### 6. `axolotlclient-mod` (legacy) — single-tenant Fabric mod
+
+Forked AxolotlClient. Pre-SaaS legacy; not part of the multi-tenant pipeline. Kept in-repo for historical builds and as a reference for the upcoming per-tenant MC plugin (force-launcher mode + game-ticket verify, Bant A6).
 
 ---
 
-### 2. Truth Launcher
+## Production deployment
 
-A cross-platform desktop application built with **Tauri v2** that handles authentication, mod management, and game launching.
+Single VDS (`45.141.150.233`, Plesk + Cloudflare). Subdomain layout:
 
-| Category | Details |
-|---|---|
-| **Backend** | Rust (Tauri v2) |
-| **Frontend** | React 19 + TypeScript + Vite 7 |
-| **Styling** | Vanilla CSS (Dark theme with red/purple accents) |
-| **Features** | Discord Rich Presence, System Tray |
-
-**Frontend Components:**
-- `Login` -- Authentication screen with HWID extraction
-- `ModManager` -- Automatic mod downloading and hash verification
-- `LaunchOverlay` -- Game launch progress and status
-- `Settings` -- User preferences and configuration
-- `PollModal` -- In-launcher community polls
-- `WindowControls` -- Custom frameless window controls
-
-**Rust Backend (Tauri):**
-- `lib.rs` -- HWID extraction, Tauri commands, system integration
-- `downloader.rs` -- Parallel asset/library downloading with hash verification
-- `file_manager.rs` -- Game directory management, mod file operations
-
-**Key Features:**
-- Automatic Minecraft asset and library downloading
-- Mod auto-sync with hash verification against the backend
-- HWID extraction and session heartbeat reporting
-- Discord Rich Presence integration
-- System tray with minimize-to-tray support
-- Custom frameless window with native controls
-- Auto-close when game starts, auto-reopen when game exits
-
----
-
-### 3. Admin Panel
-
-A web-based administration dashboard for managing the entire ecosystem.
-
-| Category | Details |
-|---|---|
-| **Framework** | React 19 + TypeScript + Vite 7 |
-| **Styling** | Tailwind CSS v4 (violet/dark theme) |
-| **Charts** | Recharts 3.7 |
-| **Drag & Drop** | dnd-kit |
-
-**Dashboard Pages:**
-
-| Page | Description |
-|---|---|
-| **Dashboard** | Overview stats, hourly player chart, quick actions |
-| **User Management** | Search, paginate, view user profiles with system info |
-| **Ban Management** | HWID-based banning with reason tracking |
-| **Mod Management** | Drag-and-drop sortable mod list with versioning |
-| **Session Monitor** | Active player sessions with HWID/IP/heartbeat |
-| **Crash Logs** | View and filter crash reports from players |
-| **Event Logs** | Filterable system event history |
-| **Analytics** | System distribution charts (OS, GPU, CPU, RAM, country) |
-| **Remote Config** | Announcements, maintenance mode, polls |
-
-**Key Features:**
-- Alt account detection via shared HWID/IP matching
-- Real-time session monitoring with heartbeat tracking
-- System analytics with distribution charts (OS, hardware, location)
-- Drag-and-drop mod ordering with dependency management
-- Announcement system with image/message templates
-- Maintenance mode toggle
-- Community poll management with vote tracking
-
----
-
-### 4. PvP Mod
-
-A fork of [AxolotlClient](https://github.com/AxolotlClient/AxolotlClient-mod) -- a Fabric-based client mod providing HUD modules, PvP enhancements, and quality-of-life features for Minecraft.
-
-| Category | Details |
-|---|---|
-| **Language** | Java |
-| **Mod Loader** | Fabric |
-| **Build System** | Gradle (multi-version) |
-| **Supported Versions** | 1.8.9, 1.16 (Combat), 1.20.1, 1.21.1, 1.21.4 |
-
-**HUD Modules:**
-
-| Module | Module | Module | Module |
+| Host | Cloudflare | Service | Path |
 |---|---|---|---|
-| FPS | Ping | CPS | Armor |
-| Potions | Keystrokes | Speed | Scoreboard |
-| Crosshair | Coordinates | BossBar | Arrow Count |
-| Hotbar | Memory | Combo | TPS |
-| Player Count | Compass | Real Time | Reach Display |
+| `truthsoft.net` | proxied | static SPA + Express via systemd | `/var/www/vhosts/truthsoft.net/httpdocs` + `/opt/truthsoft-server` |
+| `api.truthsoft.net` | proxied | Express (truthsoft-server) | same backing service |
+| `backend.truthsoft.net` | proxied | Rust backend (Axum) | `/opt/minetruth-backend` |
+| `customer-admin.truthsoft.net` | proxied | static SPA | per-subdomain Plesk vhost |
+| `tunnel.truthsoft.net` | **DNS-only** | wrapper WebSocket only | dedicated subdomain, separate WAF surface |
 
-**PvP & Gameplay Features:**
-- **Visual** -- Custom Skies, Beacon Beams, Hit Color, Low Fire/Shield, Motion Blur, Custom Block Outlines
-- **Utility** -- Freelook, Zoom, Screenshot Utils, Fullbright, Time Changer, TNT Timer, Scrollable Tooltips
-- **Social** -- Custom Badges, Nametag customization
+Systemd services: `minetruth-backend`, `truthsoft-server`, `launcher-build-runner.{service,timer}` (oneshot every 30 s, runs as `truthsoft-build` non-root), `nginx`.
 
----
+Cloudflare real-IP zones live in `/etc/nginx/conf.d/cf-real-ip.conf` so rate limiting + admin IP whitelisting see the actual client IP, not the rotating CF edge.
 
-## Tech Stack Summary
-
-| Component | Backend | Frontend | Database |
-|---|---|---|---|
-| **Backend API** | Rust + Axum | -- | MySQL (SQLx) |
-| **Launcher** | Rust (Tauri v2) | React + TS + Vite | -- |
-| **Admin Panel** | -- | React + TS + Tailwind | -- |
-| **PvP Mod** | Java (Fabric) | -- | -- |
+Builds, env templates, and the deploy runbook live under `deploy/`. Each cut is delivered as a versioned zip (`security-audit-pass-deploy.zip` is the most recent).
 
 ---
 
-## Getting Started
+## Security model
 
-### Prerequisites
+Layered, with most layers shipping in named "sprints":
 
-- **Rust** (latest stable)
-- **Node.js** (v18+)
-- **MySQL** (or XAMPP)
-- **Java 17+** and **Gradle** (for the mod)
+| Layer | Mechanism |
+|---|---|
+| Tenant isolation | every row has `tenant_id NOT NULL` + 9 FKs; v2 endpoints route through tenant resolver |
+| License enforcement | 4/4 entry points blocked: backend login, tunnel handshake, admin SPA gate, launcher startup probe |
+| At-rest encryption | AES-256-GCM master key (env), per-secret nonce; encrypted-blob present requires successful decrypt — no silent plaintext fallback |
+| Per-tenant signing | Ed25519 keypair per tenant; one tenant's compromise can't forge another tenant's manifests / tickets |
+| Auth | httpOnly cookie + token_version bump on password change / forced logout; HWID + IP admin gate; constant-time license key compare |
+| Transport | TLS at origin (Plesk LE), Cloudflare in front, SPKI pin in wrapper, https-only mod URLs |
+| Anti-abuse | per-IP rate limits (login 10/min, heartbeat 30/min, crash 5/h, wrapper bootstrap 10/min); zip-bomb cap; magic-byte upload check |
+| Build runner | dedicated `truthsoft-build` user, `NoNewPrivileges`, `ProtectSystem=strict`, scoped `ReadWritePaths` |
+| Webhooks | Stripe signature verify + event-id idempotency; cancel path JOINs through tenants table for revoke fan-out |
 
-### Running the Stack
+Known accepted risks (documented, not yet shipped):
+- Cracked/patched launcher could connect to the operator's MC server directly. The fix is per-tenant MC plugin + game-ticket (Bant A6, customer-driven).
+- Authenticode signing not applied — Windows SmartScreen warning persists. Operator decision.
+- Iyzico / PayTR (Türkiye PSP) checkout returns 501; Stripe is the only enabled provider.
+
+---
+
+## Repository layout
+
+```
+Truth Launcher/
+├── minetruth-backend/      # Rust/Axum control plane (api.truthsoft.net surface)
+├── minetruth-launcher/     # Tauri 2 player launcher (per-tenant binary)
+├── minetruth-admin/        # React SPA → customer-admin.truthsoft.net
+├── minetruth-wrapper/      # Customer-VPS Rust agent (CMS bridge + HWID grant)
+├── truthsoft-web/          # Express + React signup / dashboard / Stripe webhooks
+│   ├── server/             # Express + sqlx-style MySQL via mysql2 promise pool
+│   └── client/             # Vite + React 19 SPA
+├── axolotlclient-mod/      # Legacy single-tenant Fabric mod (pre-SaaS)
+├── deploy/                 # Versioned deploy zips, nginx + systemd templates, runbook scripts
+└── docs/                   # CUSTOMER-SETUP-{TR,EN}.md, ADMIN-GRANTS-MANUAL-SETUP-*.md
+```
+
+---
+
+## Local development
+
+Production assumes the Plesk + Cloudflare stack above; for local hacking each component runs standalone.
 
 ```bash
-# 1. Start the backend API
+# backend (Rust + sqlx, requires MariaDB)
 cd minetruth-backend
+cp .env.example .env   # edit DATABASE_URL, BRIDGE_TOKEN, TRUTHSOFT_MASTER_KEY
 cargo run
 
-# 2. Start the launcher in dev mode
-cd minetruth-launcher
-npm install
-npm run tauri dev
+# truthsoft-web (Express + React)
+cd truthsoft-web/server && npm i && npm run dev    # :3001
+cd truthsoft-web/client && npm i && npm run dev    # :5173
 
-# 3. Start the admin panel
-cd minetruth-admin
-npm install
-npm run dev
+# customer-admin SPA
+cd minetruth-admin && npm i && npm run dev         # :5174
 
-# 4. Build the client mod
-cd axolotlclient-mod
-./gradlew build
+# launcher (Tauri 2 — needs webkit2gtk on Linux, or use Windows / cargo-xwin)
+cd minetruth-launcher && npm i && npm run tauri dev
+
+# wrapper (customer VPS agent — point at local backend)
+cd minetruth-wrapper
+cargo run -- --config wrapper-config.toml
 ```
 
-### Database Setup
-
-Set up a MySQL database and run the schema:
-
-```bash
-mysql -u root < minetruth-backend/dev_schema.sql
-```
-
-Default connection string: `mysql://root:@localhost/minetruth`
-
----
-
-## Project Structure
-
-```
-MineTruth/
-├── minetruth-backend/          # Rust/Axum REST API
-│   ├── src/
-│   │   ├── routes/             # API route handlers
-│   │   │   ├── auth.rs         # Authentication & sessions
-│   │   │   ├── bans.rs         # HWID ban management
-│   │   │   ├── mods.rs         # Mod distribution
-│   │   │   ├── users.rs        # User management
-│   │   │   ├── stats.rs        # Analytics & statistics
-│   │   │   ├── crash.rs        # Crash report handling
-│   │   │   ├── config.rs       # Remote configuration
-│   │   │   └── events.rs       # Event logging
-│   │   ├── models/             # Database structs
-│   │   └── main.rs             # Entry point & router
-│   └── dev_schema.sql          # Database schema
-│
-├── minetruth-launcher/         # Tauri v2 Desktop App
-│   ├── src-tauri/
-│   │   └── src/
-│   │       ├── lib.rs          # HWID, Tauri commands
-│   │       ├── downloader.rs   # Asset downloading
-│   │       └── file_manager.rs # File operations
-│   └── src/
-│       ├── components/         # React UI components
-│       ├── services/           # API client
-│       ├── contexts/           # Auth context
-│       └── App.tsx             # Main application
-│
-├── minetruth-admin/            # Admin Web Dashboard
-│   └── src/
-│       ├── components/         # Dashboard, Users, Bans, Mods...
-│       ├── services/           # API client (Axios)
-│       └── App.tsx             # Router & layout
-│
-└── axolotlclient-mod/          # Fabric Client Mod (Fork)
-    ├── common/                 # Shared code across versions
-    ├── 1.8.9/                  # MC 1.8.9 version
-    ├── 1.20/                   # MC 1.20.1 version
-    ├── 1.21/                   # MC 1.21.1 version
-    ├── 1.21.4/                 # MC 1.21.4 version
-    └── 1.16_combat-6/          # Combat snapshot version
-```
-
----
-
-## Security Model
-
-Project implements a layered security approach:
-
-- **HWID Binding** -- Each account is tied to a hardware identifier, preventing unauthorized sharing
-- **HWID Bans** -- Banned hardware IDs are blocked at login, with optional expiration dates
-- **Session Heartbeats** -- Active sessions send periodic heartbeats; stale sessions are automatically cleaned
-- **IP Tracking** -- Login IPs are recorded for alt account detection and abuse prevention
-- **Alt Detection** -- Admin panel can identify related accounts via shared HWID or IP patterns
-- **Mod Integrity** -- SHA-256 hash verification ensures players run approved, unmodified mods
-- **RBAC** -- Role-based access control with permission system for admin operations
+The first `cargo run` of `minetruth-backend` runs the migration set in `src/migrations.rs` (numbered, idempotent). `dev_schema.sql` is no longer the source of truth; migrations are.
 
 ---
 
 ## License
 
-- **Truth Oyun Hizmetleri** (Backend, Launcher, Admin) -- Proprietary
-- **AxolotlClient Mod** -- See [axolotlclient-mod/LICENSE](axolotlclient-mod/LICENSE)
+Proprietary. © Truth Oyun Hizmetleri. Third-party components retain their own licenses (`axolotlclient-mod/LICENSE` for the Fabric fork, OSS deps via Cargo / npm).
