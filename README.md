@@ -146,26 +146,6 @@ Forked AxolotlClient. Pre-SaaS legacy; not part of the multi-tenant pipeline. Ke
 
 ---
 
-## Production deployment
-
-Single VDS (`45.141.150.233`, Plesk + Cloudflare). Subdomain layout:
-
-| Host | Cloudflare | Service | Path |
-|---|---|---|---|
-| `truthsoft.net` | proxied | static SPA + Express via systemd | `/var/www/vhosts/truthsoft.net/httpdocs` + `/opt/truthsoft-server` |
-| `api.truthsoft.net` | proxied | Express (truthsoft-server) | same backing service |
-| `backend.truthsoft.net` | proxied | Rust backend (Axum) | `/opt/minetruth-backend` |
-| `customer-admin.truthsoft.net` | proxied | static SPA | per-subdomain Plesk vhost |
-| `tunnel.truthsoft.net` | **DNS-only** | wrapper WebSocket only | dedicated subdomain, separate WAF surface |
-
-Systemd services: `minetruth-backend`, `truthsoft-server`, `launcher-build-runner.{service,timer}` (oneshot every 30 s, runs as `truthsoft-build` non-root), `nginx`.
-
-Cloudflare real-IP zones live in `/etc/nginx/conf.d/cf-real-ip.conf` so rate limiting + admin IP whitelisting see the actual client IP, not the rotating CF edge.
-
-Builds, env templates, and the deploy runbook live under `deploy/`. Each cut is delivered as a versioned zip (`security-audit-pass-deploy.zip` is the most recent).
-
----
-
 ## Security model
 
 Layered, with most layers shipping in named "sprints":
